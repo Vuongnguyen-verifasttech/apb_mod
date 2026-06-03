@@ -1,7 +1,8 @@
 //==============================================================================
 // File          : apb_sram.sv
-// Description   : APB Slave Memory với logic sửa lỗi treo FSM khi gặp SLVERR
-//                 (Giữ nguyên addr_valid = 0 cho vùng địa chỉ lỗi)
+// Description   : APB Slave Memory hỗ trợ True Back-to-Back (B2B) chuẩn AMBA
+//                 bằng đường chuyển trạng thái trực tiếp ACCESS -> SETUP.
+//                 (Giữ nguyên addr_valid = 0 cho vùng địa chỉ lỗi 0x400 - 0x4FF)
 //==============================================================================
 
 `timescale 1ns/1ps
@@ -65,28 +66,38 @@ module apb_sram #(
     end
 
     // =============================================
-    // Next State Logic (Combinational)
+    // Next State Logic (Combinational) - FIX THEO CÁCH A
     // =============================================
     always_comb begin
         next_state = current_state;
         case (current_state)
             IDLE: begin
-                // 🔥 Đfont SỬA: Chỉ cần psel lên là nhảy sang SETUP luôn,
-                // không quan tâm địa chỉ có hợp lệ hay không.
+                // Bắt đầu chu kỳ đầu tiên: Chuyển sang SETUP khi có psel
                 if (psel && !penable) begin
                     next_state = SETUP;
                 end
             end
             
             SETUP: begin
+                // APB Spec: Sau SETUP luôn là ACCESS
                 next_state = ACCESS;
             end
             
             ACCESS: begin
-                if (pready)
-                    next_state = IDLE;
-                else
+                // Chỉ xét chuyển trạng thái khi chu kỳ hiện tại đã HOÀN THÀNH (pready = 1)
+                if (pready) begin
+                    if (psel && !penable) begin
+                        // 🔥 ĐƯỜNG TẮT CÁCH A: Master gối đầu gói mới ngay lập tức!
+                        // Chuyển thẳng từ ACCESS về SETUP mà không thèm qua IDLE.
+                        next_state = SETUP;
+                    end else begin
+                        // Không có gói gối đầu -> Bus nghỉ, về IDLE
+                        next_state = IDLE;
+                    end
+                end else begin
+                    // Nếu DUT chưa sẵn sàng (pready = 0), bắt buộc phải giữ ACCESS
                     next_state = ACCESS;
+                end
             end
             
             default: next_state = IDLE;
@@ -101,7 +112,8 @@ module apb_sram #(
             wait_cycles <= '0;
             wait_cnt    <= '0;
         end else begin
-            if (current_state == SETUP) begin
+            // Nạp giá trị chu kỳ đợi ngay tại pha SETUP (áp dụng cho cả khi đi tắt từ ACCESS sang)
+            if (next_state == SETUP) begin
                 if (MAX_WAIT > 0)
                     wait_cycles <= paddr[7:0] % (MAX_WAIT + 1);
                 else
@@ -124,14 +136,14 @@ module apb_sram #(
 
         if (current_state == ACCESS) begin
             if (wait_cnt >= wait_cycles) begin
-                pready = 1'b1; // Luôn kết thúc chu kỳ khi hết wait state
+                pready = 1'b1; // Kéo Ready lên báo kết thúc giao dịch
                 
                 if (!addr_valid) begin
-                    // 🔥 Địa chỉ lỗi (> 0x3FF): Vẫn phản hồi Ready nhưng báo thêm SLVERR
+                    // 🔥 Nếu là địa chỉ test lỗi (> 0x3FF): Bật PSLVERR vọt lên 1
                     pslverr = 1'b1;
                     prdata  = 32'hDEADBEEF;
                 end else if (!pwrite) begin
-                    // Địa chỉ đúng + lệnh Đọc: Trả data từ RAM thật
+                    // Địa chỉ đúng + Lệnh Đọc: Xuất data từ RAM thật
                     prdata = mem[paddr[MEM_DEPTH-1:0]];
                 end
             end
@@ -142,7 +154,7 @@ module apb_sram #(
     // Write Logic (Sequential)
     // =============================================
     always_ff @(posedge pclk) begin
-        // Chặn không cho ghi đè dữ liệu vào RAM thật khi addr_valid = 0
+        // Chỉ ghi vào mảng RAM nếu địa chỉ thực sự hợp lệ (addr_valid = 1)
         if (current_state == ACCESS && pwrite && addr_valid && (wait_cnt >= wait_cycles)) begin
             mem[paddr[MEM_DEPTH-1:0]] <= pwdata;
         end
