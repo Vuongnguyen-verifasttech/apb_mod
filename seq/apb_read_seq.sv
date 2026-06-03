@@ -1,0 +1,55 @@
+//==============================================================================
+// File          : apb_driver.sv
+// Author        : [vnguyen]
+// Company       : [Verifast]
+// Project       : APB Verification Environment
+// Description   : APB Driver definition
+//                 - Handles the driving of APB transactions to the DUT
+//                      
+//
+// Version       : 1.0
+// Date          : 12-May-2026
+//==============================================================================
+
+`ifndef APB_READ_SEQ_SV
+`define APB_READ_SEQ_SV
+
+class apb_read_seq extends apb_base_seq;
+
+    `uvm_object_utils(apb_read_seq)
+
+    rand int num_tx = 128;
+
+    function new(string name = "apb_read_seq");
+        super.new(name);
+    endfunction
+
+    virtual task body();
+        apb_transaction tr;
+        `uvm_info(get_type_name(), "============================================================", UVM_NONE);
+                `uvm_info(get_type_name(), "           START APB_06: READ  SEQUENCE", UVM_NONE);
+                        `uvm_info(get_type_name(), "============================================================", UVM_NONE);
+        repeat(num_tx) begin
+            tr = apb_transaction::type_id::create("tr");
+
+            start_item(tr);
+            //assert(tr.randomize() with {pwrite == 0;});
+            if (!tr.randomize() with {pwrite == 0;}) begin
+            // pragma coverage off
+            `uvm_error(get_type_name(), "Randomize failed for READ transaction!");
+            // pragma coverage on
+            end
+            tr.seq_name = "READ_SEQ";
+            tr.seq_name = "READ_SEQ";
+            finish_item(tr);
+
+            `uvm_info(get_type_name(), $sformatf("TASK READ DATA : Sent Read: ADDR=0x%8h", tr.paddr), UVM_MEDIUM)
+        end
+        `uvm_info(get_type_name(), "============================================================", UVM_NONE);
+                `uvm_info(get_type_name(), "           COMPLETE APB_O6: READ SEQUENCE", UVM_NONE);
+                        `uvm_info(get_type_name(), "============================================================", UVM_NONE);
+    endtask
+
+endclass : apb_read_seq
+
+`endif
