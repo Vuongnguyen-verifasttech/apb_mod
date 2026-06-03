@@ -1,3 +1,9 @@
+//==============================================================================
+// File          : apb_sram.sv
+// Description   : APB Slave Memory với logic sửa lỗi treo FSM khi gặp SLVERR
+//                 (Giữ nguyên addr_valid = 0 cho vùng địa chỉ lỗi)
+//==============================================================================
+
 `timescale 1ns/1ps
 
 module apb_sram #(
@@ -21,7 +27,7 @@ module apb_sram #(
 );
 
     // =============================================
-    // Local parameters
+    // Local parameters & Internal Signals
     // =============================================
     localparam int MEM_SIZE = 1 << MEM_DEPTH;
     
@@ -40,82 +46,73 @@ module apb_sram #(
     logic       addr_valid;
 
     // =============================================
-    // Reset
+    // Address Decoding - Combinational
+    // Vùng nhớ thật từ 0x000 đến 0x3FF (addr_valid = 1).
+    // Vùng địa chỉ lỗi từ 0x400 đến 0x4FF (addr_valid = 0).
     // =============================================
-    always_ff @(posedge pclk or negedge presetn) begin
-        if (!presetn) begin
-            current_state <= IDLE;
-            wait_cnt      <= '0;
-            wait_cycles   <= '0;
-            foreach (mem[i]) mem[i] <= '0;
-        end else begin
-            current_state <= next_state;
-        end
+    always_comb begin
+        addr_valid = (paddr < MEM_SIZE); 
     end
 
     // =============================================
-    // Next State Logic - HỖ TRỢ BACK-TO-BACK
+    // State Register (Sequential)
+    // =============================================
+    always_ff @(posedge pclk or negedge presetn) begin
+        if (!presetn)
+            current_state <= IDLE;
+        else
+            current_state <= next_state;
+    end
+
+    // =============================================
+    // Next State Logic (Combinational)
     // =============================================
     always_comb begin
         next_state = current_state;
-        
         case (current_state)
             IDLE: begin
-                if (psel && !penable)
+                // 🔥 Đfont SỬA: Chỉ cần psel lên là nhảy sang SETUP luôn,
+                // không quan tâm địa chỉ có hợp lệ hay không.
+                if (psel && !penable) begin
                     next_state = SETUP;
+                end
             end
-
+            
             SETUP: begin
                 next_state = ACCESS;
             end
-
+            
             ACCESS: begin
-                if (pready) begin
-                    // Hỗ trợ Back-to-Back: Nếu Master đã đưa SETUP mới ngay
-                    if (psel && !penable)
-                        next_state = SETUP;
-                    else
-                        next_state = IDLE;
-                end
-                // else: vẫn đang wait → giữ ACCESS
+                if (pready)
+                    next_state = IDLE;
+                else
+                    next_state = ACCESS;
             end
-
+            
             default: next_state = IDLE;
         endcase
     end
 
     // =============================================
-    // Wait Cycles Generation
+    // Wait States Generation (Sequential)
     // =============================================
     always_ff @(posedge pclk or negedge presetn) begin
         if (!presetn) begin
             wait_cycles <= '0;
-        end else if (current_state == SETUP) begin
-            wait_cycles <= $urandom_range(0, MAX_WAIT);
-        end
-    end
-
-    // =============================================
-    // Wait Counter
-    // =============================================
-    always_ff @(posedge pclk or negedge presetn) begin
-        if (!presetn) begin
-            wait_cnt <= '0;
-        end 
-        else if (current_state == ACCESS) begin
-            if (wait_cnt < wait_cycles) begin
-                wait_cnt <= wait_cnt + 1'b1;
+            wait_cnt    <= '0;
+        end else begin
+            if (current_state == SETUP) begin
+                if (MAX_WAIT > 0)
+                    wait_cycles <= paddr[7:0] % (MAX_WAIT + 1);
+                else
+                    wait_cycles <= '0;
+                wait_cnt <= '0;
+            end else if (current_state == ACCESS) begin
+                if (wait_cnt < wait_cycles)
+                    wait_cnt <= wait_cnt + 1'b1;
             end
-        end 
-        else begin
-            wait_cnt <= '0;        // Clear khi ở IDLE hoặc SETUP
         end
     end
-
-    // =============================================
-    // Address Validation
-    // =============================================
-    assign addr_valid = (paddr < MEM_SIZE);
 
     // =============================================
     // Output Logic - Combinational
@@ -127,12 +124,14 @@ module apb_sram #(
 
         if (current_state == ACCESS) begin
             if (wait_cnt >= wait_cycles) begin
-                pready = 1'b1;
+                pready = 1'b1; // Luôn kết thúc chu kỳ khi hết wait state
                 
                 if (!addr_valid) begin
+                    // 🔥 Địa chỉ lỗi (> 0x3FF): Vẫn phản hồi Ready nhưng báo thêm SLVERR
                     pslverr = 1'b1;
                     prdata  = 32'hDEADBEEF;
                 end else if (!pwrite) begin
+                    // Địa chỉ đúng + lệnh Đọc: Trả data từ RAM thật
                     prdata = mem[paddr[MEM_DEPTH-1:0]];
                 end
             end
@@ -140,22 +139,23 @@ module apb_sram #(
     end
 
     // =============================================
-    // Write Logic
+    // Write Logic (Sequential)
     // =============================================
     always_ff @(posedge pclk) begin
+        // Chặn không cho ghi đè dữ liệu vào RAM thật khi addr_valid = 0
         if (current_state == ACCESS && pwrite && addr_valid && (wait_cnt >= wait_cycles)) begin
             mem[paddr[MEM_DEPTH-1:0]] <= pwdata;
         end
     end
 
     // =============================================
-    // Debug
+    // Debug Monitor System
     // =============================================
     // synthesis translate_off
     always_ff @(posedge pclk) begin
         if (current_state != IDLE) begin
-            $display("[APB_SRAM] t=%0t | State=%s | Addr=0x%8h | W=%b | Ready=%b | Err=%b | Wait=%0d/%0d",
-                     $time, current_state.name(), paddr, pwrite, pready, pslverr, wait_cnt, wait_cycles);
+            $display("[APB_SRAM] t=%0t | State=%s | Addr=0x%8h | Valid=%b | W=%b | Ready=%b | Err=%b", 
+                     $time, current_state.name(), paddr, addr_valid, pwrite, pready, pslverr);
         end
     end
     // synthesis translate_on
