@@ -42,58 +42,42 @@ class apb_monitor extends uvm_monitor;
         end
     endtask
 
-    //==================================================================
-// COLLECT TRANSACTION - ĐÃ TỐI ƯU CHO FSM MỚI
-//==================================================================
 virtual task collect_transaction();
     apb_transaction trans;
     int wait_cnt = 0;
 
-    // ------ 1. DETECT SETUP PHASE ------
-    do begin
+    // 1. DETECT SETUP PHASE - Chờ đúng nhịp psel=1 và penable=0
+    while (!(vif.mon_cb.psel && !vif.mon_cb.penable)) begin
         @(vif.mon_cb);
-    end while (!(vif.mon_cb.psel && !vif.mon_cb.penable));
+    end
 
     trans = apb_transaction::type_id::create("trans");
     trans.paddr  = vif.mon_cb.paddr;
     trans.pwrite = vif.mon_cb.pwrite;
-    if (trans.pwrite) 
-        trans.pwdata = vif.mon_cb.pwdata;
+    if (trans.pwrite) trans.pwdata = vif.mon_cb.pwdata;
 
-    `uvm_info(get_type_name(), $sformatf("Detected Setup | ADDR=0x%8h WRITE=%b", 
-              trans.paddr, trans.pwrite), UVM_HIGH);
+    @(vif.mon_cb); // Chuyển dịch sang ACCESS phase
 
-    // ------ 2. ACCESS PHASE & COUNT WAIT STATES ------
-    // Chờ vào pha ACCESS (penable = 1)
-    do begin
+    // 2. CAPTURE ACCESS PHASE & WAIT STATES
+    while (!vif.mon_cb.penable) begin
         @(vif.mon_cb);
-    end while (!vif.mon_cb.penable);
+    end
 
-    // Đếm số chu kỳ pready = 0 (wait states)
     wait_cnt = 0;
     while (!vif.mon_cb.pready) begin
         wait_cnt++;
         @(vif.mon_cb);
     end
+    trans.wait_cycles = wait_cnt;
 
-    trans.wait_cycles = wait_cnt;   // Sửa: không trừ 1 nữa
-
-    // Lấy kết quả cuối cùng
     trans.prdata  = vif.mon_cb.prdata;
     trans.pslverr = vif.mon_cb.pslverr;
 
-    `uvm_info(get_type_name(), 
-        $sformatf("Collected | ADDR=0x%8h WRITE=%b WAIT=%0d RDATA=0x%8h SLVERR=%b", 
-                  trans.paddr, trans.pwrite, trans.wait_cycles, 
-                  trans.pwrite ? 32'hxxxxxxxx : trans.prdata, trans.pslverr), 
-        UVM_MEDIUM);
-
+    // Đẩy gói tin sang Scoreboard
     mon_ap.write(trans);
 
-    // ------ 3. END TRANSACTION - Hỗ trợ Back-to-Back tốt hơn ------
-    // Chỉ chờ 1 clock để sẵn sàng bắt transaction tiếp theo
-    @(vif.mon_cb);
-
+    // 🔥 SỬA TẠI ĐÂY: Xóa bỏ hoàn toàn lệnh @(vif.mon_cb) cuối cùng. 
+    // Trả luồng xử lý về ngay đầu task để vòng lặp forever kiểm tra điều kiện SETUP gói sau lập tức!
 endtask
 
 endclass 
