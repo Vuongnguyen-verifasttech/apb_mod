@@ -56,6 +56,10 @@ compile:
 # ------------------------------------------------------------------------------
 # Chạy 1 simulation đơn lẻ: Show log trực tiếp ra Terminal + Vẫn lưu vào file
 # ------------------------------------------------------------------------------
+# ==============================================================================
+# 1. CHẠY SIMULATION ẨN (BATCH/CONSOLE MODE) - Chỉ show log ra Terminal
+# Ví dụ: make sim TEST_NAME=apb_write_test
+# ==============================================================================
 sim:
 	@mkdir -p single_run_logs
 	vsim -c $(COV_SIM) \
@@ -64,6 +68,17 @@ sim:
 		-do "run -all; coverage save -onexit $(TEST_NAME).ucdb; quit -f" \
 		| tee single_run_logs/$(TEST_NAME).log
 
+# ==============================================================================
+# 2. CHẠY SIMULATION HIỆN ĐỒ HỌA (GUI MODE) - Bật giao diện xem Sóng (Waveform)
+# Ví dụ: make wave TEST_NAME=apb_write_test
+# ==============================================================================
+wave:
+	@mkdir -p single_run_logs
+	vsim $(COV_SIM) \
+		$(TOP_MODULE) \
+		+UVM_TESTNAME=$(TEST_NAME) \
+		-do "add wave -r /*; run -all; wave zoom full;" \
+		| tee single_run_logs/$(TEST_NAME).log
 # ------------------------------------------------------------------------------
 # TARGET REGRESSION CHUYÊN NGHIỆP: Vòng lặp lồng lặp (Quét Testlist x Quét Seeds)
 # ------------------------------------------------------------------------------
